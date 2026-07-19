@@ -3,8 +3,9 @@ name = "cutmaster"
 version = "0.1.0"
 description = "Backend-only long-video montage pipeline extracted from the NarratoAI flow."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
+    "librosa>=0.11,<1",
     "loguru>=0.7.3",
     "openai>=1.77.0",
     "opencv-python>=4.10,<5",
@@ -30,4 +31,3 @@ packages = ["src/cutmaster"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-

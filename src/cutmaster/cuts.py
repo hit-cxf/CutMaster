@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 from loguru import logger
-from scenedetect import SceneManager, open_video
+from scenedetect import open_video
 from scenedetect.detectors import AdaptiveDetector
 
 from cutmaster.timecode import format_range, parse_range
@@ -34,6 +36,15 @@ def _nearest_beat_distance(time_sec: float, beat_times: list[float]) -> float:
     return min(distances) if distances else float("inf")
 
 
+def _frame_signature(frame: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return cv2.resize(gray, (320, 180), interpolation=cv2.INTER_AREA)
+
+
+def _mean_frame_difference(current: np.ndarray, previous: np.ndarray) -> float:
+    return float(np.mean(cv2.absdiff(current, previous)))
+
+
 def detect_source_cuts(
     video_path: Path,
     start_sec: float,
@@ -41,7 +52,8 @@ def detect_source_cuts(
     *,
     adaptive_threshold: float = 2.0,
     adaptive_min_content_val: float = 15.0,
-    adaptive_min_scene_len: int = 5,
+    adaptive_min_scene_len_sec: float = 0.25,
+    duplicate_frame_threshold: float = 1.0,
 ) -> tuple[list[float], float]:
     if end_sec <= start_sec:
         return [], 30.0
@@ -50,17 +62,31 @@ def detect_source_cuts(
     try:
         frame_rate = float(video.frame_rate)
         video.seek(start_sec)
-        manager = SceneManager()
-        manager.add_detector(
-            AdaptiveDetector(
-                adaptive_threshold=adaptive_threshold,
-                min_content_val=adaptive_min_content_val,
-                min_scene_len=adaptive_min_scene_len,
-            )
+        detector = AdaptiveDetector(
+            adaptive_threshold=adaptive_threshold,
+            min_content_val=adaptive_min_content_val,
+            min_scene_len=f"{adaptive_min_scene_len_sec}s",
         )
-        manager.detect_scenes(video, end_time=end_sec, show_progress=False)
-        scenes = manager.get_scene_list(start_in_scene=True)
-        cuts = [float(scene_start.seconds) for scene_start, _ in scenes[1:]]
+        cuts: list[float] = []
+        previous_signature: np.ndarray | None = None
+        while True:
+            frame = video.read()
+            if frame is False:
+                break
+            position = video.position
+            if float(position.seconds) >= end_sec:
+                break
+
+            signature = _frame_signature(frame)
+            if (
+                previous_signature is not None
+                and _mean_frame_difference(signature, previous_signature)
+                < duplicate_frame_threshold
+            ):
+                continue
+
+            cuts.extend(float(cut.seconds) for cut in detector.process_frame(position, frame))
+            previous_signature = signature
     finally:
         video.capture.release()
     return cuts, frame_rate

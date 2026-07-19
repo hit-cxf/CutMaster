@@ -2,7 +2,58 @@ from pathlib import Path
 
 import pytest
 
-from cutmaster.cuts import choose_source_window, optimize_script_source_windows
+import numpy as np
+from scenedetect import FrameTimecode
+
+from cutmaster.cuts import choose_source_window, detect_source_cuts, optimize_script_source_windows
+
+
+def test_detect_source_cuts_filters_near_duplicate_frames(monkeypatch, tmp_path) -> None:
+    frames = [
+        np.full((8, 8, 3), value, dtype=np.uint8)
+        for value in (0, 0, 10, 10, 20)
+    ]
+
+    class FakeCapture:
+        def release(self) -> None:
+            pass
+
+    class FakeVideo:
+        frame_rate = 10.0
+        capture = FakeCapture()
+
+        def __init__(self) -> None:
+            self.index = -1
+            self.position = FrameTimecode(0, self.frame_rate)
+
+        def seek(self, _target: float) -> None:
+            self.index = -1
+
+        def read(self):
+            self.index += 1
+            if self.index >= len(frames):
+                return False
+            self.position = FrameTimecode(self.index, self.frame_rate)
+            return frames[self.index]
+
+    processed_positions: list[int] = []
+
+    class FakeDetector:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def process_frame(self, position, _frame):
+            processed_positions.append(position.frame_num)
+            return []
+
+    monkeypatch.setattr("cutmaster.cuts.open_video", lambda _path: FakeVideo())
+    monkeypatch.setattr("cutmaster.cuts.AdaptiveDetector", FakeDetector)
+
+    cuts, frame_rate = detect_source_cuts(tmp_path / "video.mp4", 0.0, 1.0)
+
+    assert cuts == []
+    assert frame_rate == 10.0
+    assert processed_positions == [0, 2, 4]
 
 
 def test_choose_source_window_minimizes_worst_cut_distance() -> None:

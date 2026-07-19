@@ -11,7 +11,7 @@ source video
   -> reuse supplied SRT or transcribe with DashScope Fun-ASR
   -> reconstruct complete dialogue sentences in parallel and preserve cue-level time anchors
   -> ask an OpenAI-compatible LLM to select timestamped source segments
-  -> detect strong BGM energy peaks
+  -> track BGM beats with librosa
   -> validate the script and align montage cut boundaries to nearby audio peaks
   -> detect internal source-video cuts and search each source window up to 2s forward in parallel
   -> prefer more than 1s between every retained internal cut and either clip boundary;
@@ -29,7 +29,8 @@ run records. CutMaster does not import or require the NarratoAI repository.
 
 ## Install
 
-Python 3.12+, `ffmpeg`, `ffprobe`, and `uv` are required.
+Python 3.12, `ffmpeg`, `ffprobe`, and `uv` are required. Python 3.13 is currently
+excluded because librosa's Numba beat-tracking kernel is not stable in that environment.
 
 ```bash
 uv sync
@@ -87,7 +88,7 @@ Each run directory contains:
 ## Backend modules
 
 - `asr.py`: audio extraction and DashScope Fun-ASR transcription.
-- `beats.py`: full-audio energy-peak detection used for cut alignment.
+- `beats.py`: librosa onset-strength analysis and dynamic-programming beat tracking used for cut alignment.
 - `cuts.py`: parallel source-cut detection and frame-level forward-only minimax refinement with a 1-second edge constraint.
 - `dialogue.py`: parallel LLM sentence reconstruction with cue-level time anchors.
 - `llm.py`: OpenAI-compatible text-model client.
