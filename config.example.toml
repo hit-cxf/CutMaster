@@ -1,0 +1,28 @@
+[llm]
+model = "qwen3.7-plus"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "DASHSCOPE_API_KEY"
+temperature = 0.1
+max_tokens = 4000
+timeout_sec = 180.0
+max_retries = 3
+max_concurrency = 4
+
+[asr]
+backend = "bailian"
+api_key = "DASHSCOPE_API_KEY"
+reuse = true
+timeout_sec = 1800.0
+poll_interval_sec = 2.0
+max_chars = 20
+max_subtitle_duration_sec = 3.5
+
+[render]
+width = 1920
+height = 1080
+fps = 30
+encoder = "auto"
+threads = 8
+bgm_volume = 0.3
+original_volume = 0.0
+audio_sample_rate = 48000
