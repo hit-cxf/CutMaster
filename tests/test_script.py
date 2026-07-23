@@ -74,6 +74,63 @@ def test_adapt_script_uses_output_frame_grid_as_timeline_source() -> None:
     assert adapted[1]["output_timestamp"] == "00:00:04,067-00:00:08,000"
 
 
+def test_adapt_script_respects_planned_variable_durations() -> None:
+    raw = [
+        {
+            "_id": 1,
+            "timestamp": "00:00:00,000-00:00:10,000",
+            "picture": "slow introduction",
+            "planned_duration_sec": 5.5,
+        },
+        {
+            "_id": 2,
+            "timestamp": "00:00:20,000-00:00:30,000",
+            "picture": "fast climax",
+            "planned_duration_sec": 2.5,
+        },
+    ]
+    adapted = adapt_script(
+        raw,
+        target_output_length_sec=8.0,
+        target_shot_length_sec=4.0,
+        beat_times=[],
+    )
+    durations = [
+        parse_range(item["timestamp"])[1] - parse_range(item["timestamp"])[0]
+        for item in adapted
+    ]
+    assert durations == pytest.approx([5.5, 2.5])
+
+
+def test_adapt_script_preserves_prealigned_output_timeline() -> None:
+    raw = [
+        {
+            "_id": 1,
+            "timestamp": "00:00:00,000-00:00:10,000",
+            "picture": "introduction",
+            "output_start_sec": 0.0,
+            "output_end_sec": 3.9,
+            "planned_duration_sec": 3.9,
+        },
+        {
+            "_id": 2,
+            "timestamp": "00:00:20,000-00:00:30,000",
+            "picture": "climax",
+            "output_start_sec": 3.9,
+            "output_end_sec": 8.0,
+            "planned_duration_sec": 4.1,
+        },
+    ]
+    adapted = adapt_script(
+        raw,
+        target_output_length_sec=8.0,
+        target_shot_length_sec=4.0,
+        beat_times=[2.0, 6.0],
+    )
+    assert adapted[0]["output_timestamp"] == "00:00:00,000-00:00:03,900"
+    assert adapted[1]["output_timestamp"] == "00:00:03,900-00:00:08,000"
+
+
 def test_align_cut_boundaries_honors_explicit_clip_cap() -> None:
     with pytest.raises(ValueError, match="No audio beat"):
         align_cut_boundaries([4.0], [3.9, 4.1], 8.0, max_clip_duration_sec=4.0)

@@ -148,14 +148,20 @@ def adapt_script(
     output_fps: int | None = None,
 ) -> list[dict[str, Any]]:
     planned: list[tuple[dict[str, Any], float, float]] = []
+    has_aligned_timeline = all(
+        "output_start_sec" in raw and "output_end_sec" in raw for raw in raw_script
+    )
     total = 0.0
-    clip_cap = float(max_clip_duration_sec or target_shot_length_sec)
+    default_clip_cap = float(max_clip_duration_sec or target_shot_length_sec)
     for raw in raw_script:
         remaining = target_output_length_sec - total
         if remaining <= 0.001:
             break
         start, end = parse_range(str(raw["timestamp"]))
-        duration = min(end - start, clip_cap, remaining)
+        planned_duration = float(raw.get("planned_duration_sec") or default_clip_cap)
+        if max_clip_duration_sec is not None:
+            planned_duration = min(planned_duration, max_clip_duration_sec)
+        duration = min(end - start, planned_duration, remaining)
         if duration <= 0.001:
             continue
         planned.append((raw, start, duration))
@@ -165,19 +171,34 @@ def adapt_script(
     if output_fps is not None:
         total = round(total * output_fps) / output_fps
 
-    ideal_boundaries: list[float] = []
-    elapsed = 0.0
-    for _, _, duration in planned[:-1]:
-        elapsed += duration
-        ideal_boundaries.append(elapsed)
-    aligned_boundaries = align_cut_boundaries(
-        ideal_boundaries,
-        beat_times or [],
-        total,
-        max_clip_duration_sec,
-        output_fps,
-    )
-    output_boundaries = [0.0, *aligned_boundaries, total]
+    if has_aligned_timeline and len(planned) == len(raw_script):
+        output_boundaries = [float(planned[0][0]["output_start_sec"])]
+        output_boundaries.extend(float(raw["output_end_sec"]) for raw, _, _ in planned)
+        if output_fps is not None:
+            output_boundaries = [
+                round(boundary * output_fps) / output_fps for boundary in output_boundaries
+            ]
+        if abs(output_boundaries[0]) > 1e-6:
+            raise ValueError("Aligned output timeline must start at 0")
+        if any(
+            end <= start
+            for start, end in zip(output_boundaries, output_boundaries[1:])
+        ):
+            raise ValueError("Aligned output timeline must be strictly increasing")
+    else:
+        ideal_boundaries: list[float] = []
+        elapsed = 0.0
+        for _, _, duration in planned[:-1]:
+            elapsed += duration
+            ideal_boundaries.append(elapsed)
+        aligned_boundaries = align_cut_boundaries(
+            ideal_boundaries,
+            beat_times or [],
+            total,
+            max_clip_duration_sec,
+            output_fps,
+        )
+        output_boundaries = [0.0, *aligned_boundaries, total]
 
     adapted: list[dict[str, Any]] = []
     for index, ((raw, source_start, _), output_start, output_end) in enumerate(

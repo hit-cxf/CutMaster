@@ -6,12 +6,21 @@ import time
 from loguru import logger
 
 from cutmaster.asr import prepare_subtitles
-from cutmaster.beats import detect_beats
 from cutmaster.cuts import optimize_script_source_windows
 from cutmaster.dialogue import postprocess_dialogues
+from cutmaster.music import analyze_music, write_music_profile
 from cutmaster.models import AppConfig, PipelineResult, RunRequest
+from cutmaster.planning import (
+    align_slots_to_music,
+    path_to_script,
+    plan_edit_slots,
+    retrieve_candidates,
+    review_and_patch,
+    select_paths,
+)
+from cutmaster.planning_context import PlanningContext
 from cutmaster.renderer import media_duration, render_montage
-from cutmaster.script import adapt_script, generate_script, script_duration, write_script
+from cutmaster.script import adapt_script, script_duration, write_script
 
 
 def _validate_request(request: RunRequest) -> None:
@@ -39,6 +48,11 @@ def run_pipeline(request: RunRequest, config: AppConfig) -> PipelineResult:
 
     raw_script_path = output_dir / "script_raw.json"
     adapted_script_path = output_dir / "script_adapted.json"
+    music_profile_path = output_dir / "music_profile.json"
+    edit_plan_path = output_dir / "edit_plan.json"
+    candidate_pool_path = output_dir / "candidate_pool.json"
+    selection_path = output_dir / "selection_diagnostics.json"
+    planning_history_path = output_dir / "planning_history.json"
     result_path = output_dir / "result.json"
     timings: dict[str, float] = {}
     started = time.monotonic()
@@ -61,13 +75,58 @@ def run_pipeline(request: RunRequest, config: AppConfig) -> PipelineResult:
     timings["dialogue_postprocessing"] = time.monotonic() - stage_started
 
     stage_started = time.monotonic()
-    raw_script = generate_script(request, processed_subtitle, config.llm)
-    write_script(raw_script_path, raw_script)
-    timings["script_generation"] = time.monotonic() - stage_started
+    music_profile = analyze_music(request.audio_path, request.target_output_length_sec)
+    write_music_profile(music_profile_path, music_profile)
+    timings["music_analysis"] = time.monotonic() - stage_started
+
+    planning_context = PlanningContext(planning_history_path)
+    planning_context.set_artifact("music_profile", music_profile)
 
     stage_started = time.monotonic()
-    beat_times = detect_beats(request.audio_path, request.target_output_length_sec)
-    timings["beat_detection"] = time.monotonic() - stage_started
+    slots = plan_edit_slots(request, music_profile, config.llm, planning_context)
+    slots = align_slots_to_music(
+        slots,
+        music_profile,
+        request.target_output_length_sec,
+        config.render.fps,
+    )
+    planning_context.set_artifact("edit_plan", slots)
+    edit_plan_path.write_text(
+        json.dumps(slots, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    timings["slot_planning"] = time.monotonic() - stage_started
+
+    stage_started = time.monotonic()
+    candidate_pool = retrieve_candidates(
+        slots,
+        processed_subtitle,
+        request.video_path,
+        config.llm,
+        config.planning,
+        planning_context,
+    )
+    candidate_pool_path.write_text(
+        json.dumps(candidate_pool, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    timings["candidate_retrieval"] = time.monotonic() - stage_started
+
+    stage_started = time.monotonic()
+    greedy_path, beam_path, selection = select_paths(
+        slots, candidate_pool, config.planning.beam_width
+    )
+    selection["greedy_script"] = path_to_script(slots, greedy_path, request.video_path)
+    raw_script = path_to_script(slots, beam_path, request.video_path)
+    planning_context.set_artifact("selection_diagnostics", selection)
+    planning_context.record_script_version(raw_script, source="beam_search")
+    for _ in range(config.planning.review_rounds):
+        raw_script, _ = review_and_patch(
+            slots, candidate_pool, raw_script, config.llm, planning_context
+        )
+    write_script(raw_script_path, raw_script)
+    selection_path.write_text(
+        json.dumps(selection, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    timings["sequence_selection_and_review"] = time.monotonic() - stage_started
 
     stage_started = time.monotonic()
     source_duration = media_duration(request.video_path)
@@ -76,7 +135,7 @@ def run_pipeline(request: RunRequest, config: AppConfig) -> PipelineResult:
         request.target_output_length_sec,
         request.target_shot_length_sec,
         request.max_clip_duration_sec,
-        beat_times,
+        music_profile["accents_sec"],
         source_duration,
         config.render.fps,
     )
@@ -86,7 +145,7 @@ def run_pipeline(request: RunRequest, config: AppConfig) -> PipelineResult:
     adapted_script = optimize_script_source_windows(
         request.video_path,
         adapted_script,
-        beat_times,
+        music_profile["beats_sec"],
         source_duration,
         output_fps=config.render.fps,
         max_workers=config.render.threads,
@@ -110,6 +169,10 @@ def run_pipeline(request: RunRequest, config: AppConfig) -> PipelineResult:
         source_srt=str(source_srt),
         processed_subtitle=str(processed_subtitle),
         dialogues_json=str(dialogues_json),
+        music_profile=str(music_profile_path),
+        planning_history=str(planning_history_path),
+        edit_plan=str(edit_plan_path),
+        candidate_pool=str(candidate_pool_path),
         raw_script=str(raw_script_path),
         adapted_script=str(adapted_script_path),
         montage_video=str(montage_path),

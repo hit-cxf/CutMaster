@@ -41,10 +41,21 @@ class RenderConfig:
 
 
 @dataclass(frozen=True)
+class PlanningConfig:
+    candidates_per_slot: int = 4
+    retrieval_batch_size: int = 5
+    beam_width: int = 8
+    review_rounds: int = 1
+    motion_sample_fps: float = 2.0
+    motion_workers: int = 4
+
+
+@dataclass(frozen=True)
 class AppConfig:
     llm: LLMConfig
     asr: ASRConfig
     render: RenderConfig
+    planning: PlanningConfig = PlanningConfig()
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,10 @@ class PipelineResult:
     source_srt: str
     processed_subtitle: str
     dialogues_json: str
+    music_profile: str
+    planning_history: str
+    edit_plan: str
+    candidate_pool: str
     raw_script: str
     adapted_script: str
     montage_video: str

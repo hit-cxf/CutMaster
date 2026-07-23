@@ -26,3 +26,11 @@ threads = 8
 bgm_volume = 0.3
 original_volume = 0.0
 audio_sample_rate = 48000
+
+[planning]
+candidates_per_slot = 4
+retrieval_batch_size = 5
+beam_width = 8
+review_rounds = 1
+motion_sample_fps = 2.0
+motion_workers = 4

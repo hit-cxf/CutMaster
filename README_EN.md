@@ -17,10 +17,12 @@ track, and a natural-language instruction into a frame-accurate music montage.
 It extracts and extends the production flow used by the Mashup-Benchmark
 NarratoAI adapter as an independent Python project.
 
-CutMaster currently performs subtitle-guided content selection, LLM-assisted
-dialogue reconstruction, beat-aware duration planning, source-window refinement
-against visual cuts, and deterministic FFmpeg rendering. Source audio is muted
-in the final video; only the selected BGM is retained.
+CutMaster currently performs LLM-assisted dialogue reconstruction, structured
+music analysis, abstract edit-slot planning, ASR-grounded multi-candidate
+retrieval, temporally dependent Beam Search, versioned script patching,
+source-window refinement against visual cuts, and deterministic FFmpeg
+rendering. Source audio is muted in the final video; only the selected BGM is
+retained.
 
 ## Pipeline
 
@@ -29,9 +31,13 @@ source video + BGM + instruction
   -> validate inputs and protect an existing output unless --overwrite is set
   -> reuse a supplied/cached SRT or transcribe with DashScope Fun-ASR
   -> reconstruct complete dialogue sentences in parallel while preserving cue anchors
-  -> generate and validate a non-overlapping, timestamped source-selection script
-  -> detect BGM beats with librosa and repeat beat timestamps if the BGM loops
-  -> adapt clip durations and snap output boundaries to nearby beats on the output frame grid
+  -> analyze BGM beats, accents, energy curves, and sections into a structured profile
+  -> let the LLM plan abstract edit slots without source timestamps
+  -> globally adjust slot durations so every output boundary lands on a music accent
+  -> retrieve several ASR-grounded source candidates for every slot
+  -> measure candidate motion directly from the source video
+  -> compute both an independently best path and a temporally dependent Beam Search path
+  -> let the LLM review and patch the script only within the existing candidate pool
   -> detect internal source cuts in every candidate window in parallel
        - discard near-duplicate frames before adaptive scene detection
        - preserve original source timestamps for every retained frame
@@ -56,26 +62,44 @@ cue-level anchor. `dialogue_merged.srt` is the sentence-level subtitle passed to
 script generation. Dialogue reconstruction disables model thinking because it
 is a constrained boundary-selection task.
 
-### Script generation and beat alignment
+### Music profiling and abstract planning
 
-Script generation enables model thinking and requests exactly
-`ceil(target_duration / target_shot_length)` clips by default. Every returned
-range must:
+CutMaster uses `librosa` to measure RMS, onset strength, spectral centroid, and
+beats, producing a unified `music_profile.json`. The profile includes an energy
+series, beats, strong accents, section boundaries and roles, and
+energy-dependent suggested clip-duration ranges. Beats and accents are repeated
+when the BGM will loop in the final render.
+
+Initial planning enables model thinking and requests
+`ceil(target_duration / target_shot_length)` slots by default. The model
+describes each slot's content, narrative role, target emotional intensity,
+target kinetic energy, continuity requirement, and desired duration. It is not
+allowed to produce source timestamps. A global dynamic program then adjusts all
+boundaries together so cuts land on music accents while remaining monotonic and
+non-empty.
+
+### Candidate retrieval, path selection, and patching
+
+The retrieval model grounds each slot in `dialogue_merged.srt` and returns
+several source candidates with ASR evidence. Every candidate must:
 
 - overlap the supplied subtitle timeline;
-- contain a non-empty picture description;
-- avoid every other selected range;
+- be long enough for its slot;
+- contain a non-empty description and dialogue evidence;
 - use a valid source timestamp.
 
-The complete API request, JSON parsing, and semantic validation transaction is
-retried with exponential backoff. A malformed response is never accepted as a
-partial script.
+Candidate unary scores combine semantic relevance, emotion match, motion match,
+salience, and duration feasibility. CutMaster retains both:
 
-CutMaster uses `librosa.onset.onset_strength` and
-`librosa.beat.beat_track` to find BGM beats. Planned output boundaries are
-snapped to nearby beats and then quantized to the configured output frame grid.
-If the BGM is shorter than the target video, its beat timestamps are repeated in
-the same way the renderer loops the BGM.
+- an independently best path formed by the top candidate for each slot;
+- a global Beam Search path that also scores adjacent continuity, source-time
+  relations, and changes in musical energy.
+
+The review LLM may only issue `keep/replace` patches using existing
+`candidate_id` values; it cannot invent timestamps. `planning_history.json`
+records selected context, every model call and status, structured results,
+script versions, and patches. Complete API, parse, and validation transactions
+are retried with exponential backoff, and partial results are never accepted.
 
 ### Visual-cut refinement
 
@@ -168,6 +192,17 @@ The OpenAI SDK's own retries are disabled. CutMaster owns the full
 request/parse/validate retry cycle, so `max_retries = 3` means at most four
 complete attempts with `1s`, `2s`, and `4s` delays.
 
+### `[planning]`
+
+| Key | Purpose | Default in example |
+| --- | --- | --- |
+| `candidates_per_slot` | Requested source candidates per slot | `4` |
+| `retrieval_batch_size` | Slots included in one retrieval request | `5` |
+| `beam_width` | Number of paths retained by Beam Search | `8` |
+| `review_rounds` | Candidate-constrained script review rounds | `1` |
+| `motion_sample_fps` | Sampling rate for candidate motion features | `2.0` |
+| `motion_workers` | Candidate motion decoding workers | `4` |
+
 ### `[asr]`
 
 | Key | Purpose | Default in example |
@@ -245,8 +280,13 @@ Each output directory contains:
 | `source.srt` | Supplied, cached, or Fun-ASR-generated source subtitles |
 | `source_audio.m4a` | 16 kHz mono ASR input; created only when transcription is needed |
 | `dialogues.json` | Reconstructed sentences, merge operations, and original cue anchors |
-| `dialogue_merged.srt` | Sentence-level subtitles used for script generation |
-| `script_raw.json` | Validated LLM-selected, non-overlapping source ranges |
+| `dialogue_merged.srt` | Sentence-level subtitles used for candidate retrieval |
+| `music_profile.json` | Music energy, beats, accents, sections, and suggested durations |
+| `edit_plan.json` | Accent-aligned abstract edit slots without source timestamps |
+| `candidate_pool.json` | ASR-grounded candidates, model scores, and local motion features |
+| `selection_diagnostics.json` | Independent-best and Beam Search paths with scores |
+| `planning_history.json` | Maintained planning context, model calls, and versioned scripts/patches |
+| `script_raw.json` | Final selected path with slot and candidate IDs |
 | `script_adapted.json` | Frame-grid output ranges, beat alignment, refined source ranges, and cut diagnostics |
 | `clips/clip_XXXX.mp4` | Normalized, video-only intermediate clips |
 | `montage.mp4` | Concatenated video-only montage before BGM mixing |
@@ -270,8 +310,14 @@ Each `script_adapted.json` item adds:
   selection, sentence reconstruction, and cue-anchor preservation.
 - `llm.py`: OpenAI-compatible client and full JSON transaction retries.
 - `beats.py`: librosa onset-envelope and dynamic-programming beat tracking.
-- `script.py`: script prompting, validation, overlap checks, duration planning,
-  frame-grid quantization, and beat alignment.
+- `music.py`: music energy, beats, accents, sections, and dynamic clip-duration
+  analysis.
+- `planning_context.py`: persistent planning context, call history, structured
+  artifacts, and script versions.
+- `planning.py`: abstract slots, ASR candidate retrieval, motion features, Beam
+  Search, and candidate-constrained patches.
+- `script.py`: selected-candidate duration adaptation, output-timeline
+  validation, and frame-grid quantization.
 - `cuts.py`: duplicate-frame-aware PySceneDetect analysis and parallel,
   forward-only frame-level minimax source-window refinement.
 - `renderer.py`: encoder selection, frame-exact clip rendering, concatenation,
@@ -281,8 +327,10 @@ Each `script_adapted.json` item adds:
 
 ## Scope and limitations
 
-- Selection is subtitle-guided. Visually important events with no useful nearby
-  dialogue are harder for the current script generator to retrieve.
+- Candidate retrieval is subtitle-guided. Visually important events with no
+  useful nearby dialogue remain harder to place in the candidate pool.
+- The current motion feature uses low-resolution frame differences as an
+  activity proxy rather than dense optical flow or semantic action recognition.
 - One run accepts one source video and one BGM track.
 - Source audio is intentionally muted; `original_volume > 0` is rejected by the
   frame-exact renderer.

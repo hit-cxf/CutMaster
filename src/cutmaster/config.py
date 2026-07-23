@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from cutmaster.models import ASRConfig, AppConfig, LLMConfig, RenderConfig
+from cutmaster.models import ASRConfig, AppConfig, LLMConfig, PlanningConfig, RenderConfig
 
 
 def _section(data: dict[str, Any], name: str) -> dict[str, Any]:
@@ -36,6 +36,7 @@ def load_config(path: Path) -> AppConfig:
     llm = _section(data, "llm")
     asr = _section(data, "asr")
     render = _section(data, "render")
+    planning = _section(data, "planning")
     model = str(llm.get("model") or "").strip()
     if not model:
         raise ValueError("Missing [llm].model")
@@ -69,5 +70,13 @@ def load_config(path: Path) -> AppConfig:
             bgm_volume=float(render.get("bgm_volume", 0.3)),
             original_volume=float(render.get("original_volume", 0.0)),
             audio_sample_rate=int(render.get("audio_sample_rate", 48000)),
+        ),
+        planning=PlanningConfig(
+            candidates_per_slot=int(planning.get("candidates_per_slot", 4)),
+            retrieval_batch_size=int(planning.get("retrieval_batch_size", 5)),
+            beam_width=int(planning.get("beam_width", 8)),
+            review_rounds=int(planning.get("review_rounds", 1)),
+            motion_sample_fps=float(planning.get("motion_sample_fps", 2.0)),
+            motion_workers=int(planning.get("motion_workers", 4)),
         ),
     )
